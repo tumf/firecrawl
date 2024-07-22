@@ -16,11 +16,13 @@ import { scrapWithFetch } from "./scrapers/fetch";
 import { scrapWithFireEngine } from "./scrapers/fireEngine";
 import { scrapWithPlaywright } from "./scrapers/playwright";
 import { scrapWithScrapingBee } from "./scrapers/scrapingBee";
+import { extractLinks } from "./utils/utils";
 
 dotenv.config();
 
 const baseScrapers = [
   "fire-engine",
+  "fire-engine;chrome-cdp",
   "scrapingBee",
   "playwright",
   "scrapingBeeLoad",
@@ -70,6 +72,8 @@ function getScrapingFallbackOrder(
         return !!process.env.SCRAPING_BEE_API_KEY;
       case "fire-engine":
         return !!process.env.FIRE_ENGINE_BETA_URL;
+      case "fire-engine;chrome-cdp":
+        return !!process.env.FIRE_ENGINE_BETA_URL;  
       case "playwright":
         return !!process.env.PLAYWRIGHT_MICROSERVICE_URL;
       default:
@@ -80,6 +84,7 @@ function getScrapingFallbackOrder(
   let defaultOrder = [
     "scrapingBee",
     "fire-engine",
+    "fire-engine;chrome-cdp",
     "playwright",
     "scrapingBeeLoad",
     "fetch",
@@ -109,6 +114,8 @@ function getScrapingFallbackOrder(
   return scrapersInOrder as (typeof baseScrapers)[number][];
 }
 
+
+
 export async function scrapSingleUrl(
   urlToScrap: string,
   pageOptions: PageOptions = {
@@ -136,8 +143,16 @@ export async function scrapSingleUrl(
       metadata: { pageStatusCode?: number; pageError?: string | null };
     } = { text: "", screenshot: "", metadata: {} };
     let screenshot = "";
+
     switch (method) {
       case "fire-engine":
+      case "fire-engine;chrome-cdp":  
+
+        let engine: "playwright" | "chrome-cdp" | "tlsclient" = "playwright";
+        if(method === "fire-engine;chrome-cdp"){
+          engine = "chrome-cdp";
+        }
+
         if (process.env.FIRE_ENGINE_BETA_URL) {
           console.log(`Scraping ${url} with Fire Engine`);
           const response = await scrapWithFireEngine({
@@ -146,6 +161,9 @@ export async function scrapSingleUrl(
             screenshot: pageOptions.screenshot,
             pageOptions: pageOptions,
             headers: pageOptions.headers,
+            fireEngineOptions: {
+              engine: engine,
+            }
           });
           scraperResponse.text = response.html;
           scraperResponse.screenshot = response.screenshot;
@@ -234,7 +252,6 @@ export async function scrapSingleUrl(
       scraperResponse.text = customScrapedContent.html;
       screenshot = customScrapedContent.screenshot;
     }
-
     //* TODO: add an optional to return markdown or structured/extracted content
     let cleanedHtml = removeUnwantedElements(scraperResponse.text, pageOptions);
     return {
@@ -309,6 +326,10 @@ export async function scrapSingleUrl(
     const soup = cheerio.load(rawHtml);
     const metadata = extractMetadata(soup, urlToScrap);
 
+    let linksOnPage: string[] | undefined;
+
+    linksOnPage = extractLinks(rawHtml, urlToScrap);
+
     let document: Document;
     if (screenshot && screenshot.length > 0) {
       document = {
@@ -317,9 +338,10 @@ export async function scrapSingleUrl(
         html: pageOptions.includeHtml ? html : undefined,
         rawHtml:
           pageOptions.includeRawHtml ||
-          extractorOptions.mode === "llm-extraction-from-raw-html"
+            extractorOptions.mode === "llm-extraction-from-raw-html"
             ? rawHtml
             : undefined,
+        linksOnPage,
         metadata: {
           ...metadata,
           screenshot: screenshot,
@@ -335,7 +357,7 @@ export async function scrapSingleUrl(
         html: pageOptions.includeHtml ? html : undefined,
         rawHtml:
           pageOptions.includeRawHtml ||
-          extractorOptions.mode === "llm-extraction-from-raw-html"
+            extractorOptions.mode === "llm-extraction-from-raw-html"
             ? rawHtml
             : undefined,
         metadata: {
@@ -344,6 +366,7 @@ export async function scrapSingleUrl(
           pageStatusCode: pageStatusCode,
           pageError: pageError,
         },
+        linksOnPage,
       };
     }
 
@@ -354,6 +377,7 @@ export async function scrapSingleUrl(
       content: "",
       markdown: "",
       html: "",
+      linksOnPage: [],
       metadata: {
         sourceURL: urlToScrap,
         pageStatusCode: pageStatusCode,

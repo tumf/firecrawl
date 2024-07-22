@@ -8,14 +8,11 @@ primary_region = 'mia'
 kill_signal = 'SIGINT'
 kill_timeout = '30s'
 
-[deploy]
-  release_command = 'node dist/src/trigger-shutdown.js https://api.firecrawl.dev'
-
 [build]
 
 [processes]
-  app = 'node dist/src/index.js'
-  worker = 'node dist/src/services/queue-worker.js'
+  app = 'node --max-old-space-size=4096 dist/src/index.js'
+  worker = 'node --max-old-space-size=4096 dist/src/services/queue-worker.js'
 
 [http_service]
   internal_port = 8080

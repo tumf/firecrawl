@@ -383,7 +383,7 @@ export class WebCrawler {
     return linkDomain === baseDomain;
   }
 
-  private isFile(url: string): boolean {
+  public isFile(url: string): boolean {
     const fileExtensions = [
       ".png",
       ".jpg",
@@ -393,6 +393,7 @@ export class WebCrawler {
       ".js",
       ".ico",
       ".svg",
+      ".tiff",
       // ".pdf", 
       ".zip",
       ".exe",

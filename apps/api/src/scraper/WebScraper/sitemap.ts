@@ -2,6 +2,7 @@ import axios from "axios";
 import { axiosTimeout } from "../../lib/timeout";
 import { parseStringPromise } from "xml2js";
 import { scrapWithFireEngine } from "./scrapers/fireEngine";
+import { WebCrawler } from "./crawler";
 
 export async function getLinksFromSitemap(
   {
@@ -21,7 +22,7 @@ export async function getLinksFromSitemap(
         const response = await axios.get(sitemapUrl, { timeout: axiosTimeout });
         content = response.data;
       } else if (mode === 'fire-engine') {
-        const response = await scrapWithFireEngine({ url: sitemapUrl, fireEngineOptions: { engine: "request", method: "get", mobileProxy: true } });
+        const response = await scrapWithFireEngine({ url: sitemapUrl, fireEngineOptions: { method: "get", mobileProxy: true },options:{endpoint:"request"} });
         content = response.html;
       }
     } catch (error) {
@@ -41,7 +42,7 @@ export async function getLinksFromSitemap(
       }
     } else if (root && root.url) {
       for (const url of root.url) {
-        if (url.loc && url.loc.length > 0) {
+        if (url.loc && url.loc.length > 0 && !WebCrawler.prototype.isFile(url.loc[0])) {
           allUrls.push(url.loc[0]);
         }
       }
