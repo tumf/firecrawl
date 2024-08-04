@@ -4,6 +4,7 @@ import { logScrape } from "../../../services/logging/scrape_log";
 import { generateRequestParams } from "../single_url";
 import { fetchAndProcessPdf } from "../utils/pdfProcessor";
 import { universalTimeout } from "../global";
+import { Logger } from "../../../lib/logger";
 
 /**
  * Scrapes a URL with Fire-Engine
@@ -46,7 +47,7 @@ export async function scrapWithFireEngine({
   try {
     const reqParams = await generateRequestParams(url);
     const waitParam = reqParams["params"]?.wait ?? waitFor;
-    const engineParam = reqParams["params"]?.engine ?? fireEngineOptions?.engine  ?? "playwright";
+    const engineParam = reqParams["params"]?.engine ?? reqParams["params"]?.fireEngineOptions?.engine ?? fireEngineOptions?.engine  ?? "playwright";
     const screenshotParam = reqParams["params"]?.screenshot ?? screenshot;
     const fireEngineOptionsParam : FireEngineOptions = reqParams["params"]?.fireEngineOptions ?? fireEngineOptions;
 
@@ -59,11 +60,10 @@ export async function scrapWithFireEngine({
 
     let engine = engineParam; // do we want fireEngineOptions as first choice?
 
-    console.log(
-      `[Fire-Engine][${engine}] Scraping ${url} with wait: ${waitParam} and screenshot: ${screenshotParam} and method: ${fireEngineOptionsParam?.method ?? "null"}`
+    Logger.info(
+      `⛏️ Fire-Engine (${engine}): Scraping ${url} | params: { wait: ${waitParam}, screenshot: ${screenshotParam}, method: ${fireEngineOptionsParam?.method ?? "null"} }`
     );
 
-    // console.log(fireEngineOptionsParam)
 
     const response = await axios.post(
       process.env.FIRE_ENGINE_BETA_URL + endpoint,
@@ -84,15 +84,15 @@ export async function scrapWithFireEngine({
     );
 
     if (response.status !== 200) {
-      console.error(
-        `[Fire-Engine][${engine}] Error fetching url: ${url} with status: ${response.status}`
+      Logger.debug(
+        `⛏️ Fire-Engine (${engine}): Failed to fetch url: ${url} \t status: ${response.status}`
       );
       
       logParams.error_message = response.data?.pageError;
       logParams.response_code = response.data?.pageStatusCode;
 
       if(response.data && response.data?.pageStatusCode !== 200) {
-        console.error(`[Fire-Engine][${engine}] Error fetching url: ${url} with status: ${response.status}`);
+        Logger.debug(`⛏️ Fire-Engine (${engine}): Failed to fetch url: ${url} \t status: ${response.status}`);
       }
 
       return {
@@ -130,10 +130,10 @@ export async function scrapWithFireEngine({
     }
   } catch (error) {
     if (error.code === "ECONNABORTED") {
-      console.log(`[Fire-Engine] Request timed out for ${url}`);
+      Logger.debug(`⛏️ Fire-Engine: Request timed out for ${url}`);
       logParams.error_message = "Request timed out";
     } else {
-      console.error(`[Fire-Engine][c] Error fetching url: ${url} -> ${error}`);
+      Logger.debug(`⛏️ Fire-Engine: Failed to fetch url: ${url} | Error: ${error}`);
       logParams.error_message = error.message || error;
     }
     return { html: "", screenshot: "", pageStatusCode: null, pageError: logParams.error_message };
