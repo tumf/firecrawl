@@ -128,12 +128,15 @@ export async function scrapSingleUrl(
     includeRawHtml: false,
     waitFor: 0,
     screenshot: false,
+    fullPageScreenshot: false,
     headers: undefined,
   },
   extractorOptions: ExtractorOptions = {
     mode: "llm-extraction-from-markdown",
   },
-  existingHtml: string = ""
+  existingHtml: string = "",
+  priority?: number,
+  teamId?: string
 ): Promise<Document> {
   urlToScrap = urlToScrap.trim();
 
@@ -162,7 +165,7 @@ export async function scrapSingleUrl(
       case "fire-engine;chrome-cdp":  
 
         let engine: "playwright" | "chrome-cdp" | "tlsclient" = "playwright";
-        if(method === "fire-engine;chrome-cdp"){
+        if (method === "fire-engine;chrome-cdp") {
           engine = "chrome-cdp";
         }
 
@@ -171,11 +174,15 @@ export async function scrapSingleUrl(
             url,
             waitFor: pageOptions.waitFor,
             screenshot: pageOptions.screenshot,
+            fullPageScreenshot: pageOptions.fullPageScreenshot,
             pageOptions: pageOptions,
             headers: pageOptions.headers,
             fireEngineOptions: {
               engine: engine,
-            }
+              atsv: pageOptions.atsv,
+            },
+            priority,
+            teamId,
           });
           scraperResponse.text = response.html;
           scraperResponse.screenshot = response.screenshot;
@@ -306,7 +313,7 @@ export async function scrapSingleUrl(
     const scrapersInOrder = getScrapingFallbackOrder(
       defaultScraper,
       pageOptions && pageOptions.waitFor && pageOptions.waitFor > 0,
-      pageOptions && pageOptions.screenshot && pageOptions.screenshot === true,
+      pageOptions && (pageOptions.screenshot || pageOptions.fullPageScreenshot) && (pageOptions.screenshot === true || pageOptions.fullPageScreenshot === true),
       pageOptions && pageOptions.headers && pageOptions.headers !== undefined
     );
 
@@ -338,7 +345,7 @@ export async function scrapSingleUrl(
         Logger.debug(`⛏️ ${scraper}: Successfully scraped ${urlToScrap} with text length >= 100, breaking`);
         break;
       }
-      if (pageStatusCode && pageStatusCode == 404) {
+      if (pageStatusCode && (pageStatusCode == 404 || pageStatusCode == 500)) {
         Logger.debug(`⛏️ ${scraper}: Successfully scraped ${urlToScrap} with status code 404, breaking`);
         break;
       }
