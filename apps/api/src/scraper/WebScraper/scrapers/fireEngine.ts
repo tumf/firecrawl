@@ -5,6 +5,7 @@ import { generateRequestParams } from "../single_url";
 import { fetchAndProcessPdf } from "../utils/pdfProcessor";
 import { universalTimeout } from "../global";
 import { Logger } from "../../../lib/logger";
+import * as Sentry from "@sentry/node";
 
 /**
  * Scrapes a URL with Fire-Engine
@@ -92,27 +93,35 @@ export async function scrapWithFireEngine({
     });
 
     const startTime = Date.now();
-    const _response = await axiosInstance.post(
-      process.env.FIRE_ENGINE_BETA_URL + endpoint,
-      {
-        url: url,
-        wait: waitParam,
-        screenshot: screenshotParam,
-        fullPageScreenshot: fullPageScreenshotParam,
-        headers: headers,
-        pageOptions: pageOptions,
-        disableJsDom: pageOptions?.disableJsDom ?? false,
-        priority,
-        engine,
-        instantReturn: true,
-        ...fireEngineOptionsParam,
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
+    const _response = await Sentry.startSpan({
+      name: "Call to fire-engine"
+    }, async span => {
+      return await axiosInstance.post(
+        process.env.FIRE_ENGINE_BETA_URL + endpoint,
+        {
+          url: url,
+          wait: waitParam,
+          screenshot: screenshotParam,
+          fullPageScreenshot: fullPageScreenshotParam,
+          headers: headers,
+          pageOptions: pageOptions,
+          disableJsDom: pageOptions?.disableJsDom ?? false,
+          priority,
+          engine,
+          instantReturn: true,
+          ...fireEngineOptionsParam,
+        },
+        {
+          headers: {
+            "Content-Type": "application/json",
+            ...(Sentry.isInitialized() ? ({
+                "sentry-trace": Sentry.spanToTraceHeader(span),
+                "baggage": Sentry.spanToBaggageHeader(span),
+            }) : {}),
+          }
         }
-      }
-    );
+      );
+    });
 
     let checkStatusResponse = await axiosInstance.get(`${process.env.FIRE_ENGINE_BETA_URL}/scrape/${_response.data.jobId}`);
     while (checkStatusResponse.data.processing && Date.now() - startTime < universalTimeout + waitParam) {
@@ -122,15 +131,13 @@ export async function scrapWithFireEngine({
 
     if (checkStatusResponse.data.processing) {
       Logger.debug(`⛏️ Fire-Engine (${engine}): deleting request - jobId: ${_response.data.jobId}`);
-      try {
-        axiosInstance.delete(
-          process.env.FIRE_ENGINE_BETA_URL + `/scrape/${_response.data.jobId}`,
-        );
-      } catch (error) {
-        Logger.debug(`⛏️ Fire-Engine (${engine}): Failed to delete request - jobId: ${_response.data.jobId} | error: ${error}`);
-        logParams.error_message = "Failed to delete request";
-        return { html: "", screenshot: "", pageStatusCode: null, pageError: "" };
-      }
+      axiosInstance.delete(
+        process.env.FIRE_ENGINE_BETA_URL + `/scrape/${_response.data.jobId}`, {
+          validateStatus: (status) => true
+        }
+      ).catch((error) => {
+        Logger.debug(`⛏️ Fire-Engine (${engine}): Failed to delete request - jobId: ${_response.data.jobId} | error: ${error}`);        
+      });
       
       Logger.debug(`⛏️ Fire-Engine (${engine}): Request timed out for ${url}`);
       logParams.error_message = "Request timed out";

@@ -53,8 +53,8 @@ export class WebCrawler {
     this.jobId = jobId;
     this.initialUrl = initialUrl;
     this.baseUrl = new URL(initialUrl).origin;
-    this.includes = includes ?? [];
-    this.excludes = excludes ?? [];
+    this.includes = Array.isArray(includes) ? includes : [];
+    this.excludes = Array.isArray(excludes) ? excludes : [];
     this.limit = limit;
     this.robotsTxtUrl = `${this.baseUrl}/robots.txt`;
     this.robots = robotsParser(this.robotsTxtUrl, "");
@@ -108,7 +108,12 @@ export class WebCrawler {
 
         // Normalize the initial URL and the link to account for www and non-www versions
         const normalizedInitialUrl = new URL(this.initialUrl);
-        const normalizedLink = new URL(link);
+        let normalizedLink;
+        try {
+          normalizedLink = new URL(link);
+        } catch (_) {
+          return false;
+        }
         const initialHostname = normalizedInitialUrl.hostname.replace(/^www\./, '');
         const linkHostname = normalizedLink.hostname.replace(/^www\./, '');
 
@@ -267,9 +272,18 @@ export class WebCrawler {
   public filterURL(href: string, url: string): string | null {
     let fullUrl = href;
     if (!href.startsWith("http")) {
-      fullUrl = new URL(href, this.baseUrl).toString();
+      try {
+        fullUrl = new URL(href, this.baseUrl).toString();
+      } catch (_) {
+        return null;
+      }
     }
-    const urlObj = new URL(fullUrl);
+    let urlObj;
+    try {
+      urlObj = new URL(fullUrl);
+    } catch (_) {
+      return null;
+    }
     const path = urlObj.pathname;
 
     if (this.isInternalLink(fullUrl)) { // INTERNAL LINKS
@@ -293,6 +307,23 @@ export class WebCrawler {
     }
 
     return null;
+  }
+
+  public extractLinksFromHTML(html: string, url: string) {
+    let links: string[] = [];
+
+    const $ = load(html);
+    $("a").each((_, element) => {
+      const href = $(element).attr("href");
+      if (href) {
+        const u = this.filterURL(href, url);
+        if (u !== null) {
+          links.push(u);
+        }
+      }
+    });
+
+    return links;
   }
 
   async crawl(url: string, pageOptions: PageOptions): Promise<{url: string, html: string, pageStatusCode?: number, pageError?: string}[]> {
@@ -338,15 +369,7 @@ export class WebCrawler {
         links.push({ url, html: content, pageStatusCode, pageError });
       }
 
-      $("a").each((_, element) => {
-        const href = $(element).attr("href");
-        if (href) {
-          const u = this.filterURL(href, url);
-          if (u !== null) {
-            links.push({ url: u, html: content, pageStatusCode, pageError });
-          }
-        }
-      });
+      links.push(...this.extractLinksFromHTML(content, url).map(url => ({ url, html: content, pageStatusCode, pageError })));
       
       if (this.visited.size === 1) {
         return links;

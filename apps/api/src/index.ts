@@ -1,7 +1,9 @@
-import express from "express";
+import "dotenv/config";
+import "./services/sentry"
+import * as Sentry from "@sentry/node";
+import express, { NextFunction, Request, Response } from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
-import "dotenv/config";
 import { getScrapeQueue } from "./services/queue-service";
 import { v0Router } from "./routes/v0";
 import { initSDK } from "@hyperdx/node-opentelemetry";
@@ -13,6 +15,12 @@ import { ScrapeEvents } from "./lib/scrape-events";
 import http from 'node:http';
 import https from 'node:https';
 import CacheableLookup  from 'cacheable-lookup';
+import { v1Router } from "./routes/v1";
+import expressWs from "express-ws";
+import { crawlStatusWSController } from "./controllers/v1/crawl-status-ws";
+import { ErrorResponse, ResponseWithSentry } from "./controllers/v1/types";
+import { ZodError } from "zod";
+import { v4 as uuidv4 } from "uuid";
 
 const { createBullBoard } = require("@bull-board/api");
 const { BullAdapter } = require("@bull-board/api/bullAdapter");
@@ -45,7 +53,8 @@ if (cluster.isMaster) {
     }
   });
 } else {
-  const app = express();
+  const ws = expressWs(express());
+  const app = ws.app;
 
   global.isProduction = process.env.IS_PRODUCTION === "true";
 
@@ -78,6 +87,7 @@ if (cluster.isMaster) {
 
   // register router
   app.use(v0Router);
+  app.use("/v1", v1Router);
   app.use(adminRouter);
 
   const DEFAULT_PORT = process.env.PORT ?? 3002;
@@ -115,6 +125,7 @@ if (cluster.isMaster) {
         waitingJobs,
       });
     } catch (error) {
+      Sentry.captureException(error);
       Logger.error(error);
       return res.status(500).json({ error: error.message });
     }
@@ -166,6 +177,7 @@ if (cluster.isMaster) {
             }, timeout);
           }
         } catch (error) {
+          Sentry.captureException(error);
           Logger.debug(error);
         }
       };
@@ -178,8 +190,37 @@ if (cluster.isMaster) {
     res.send({ isProduction: global.isProduction });
   });
 
+  app.use((err: unknown, req: Request<{}, ErrorResponse, undefined>, res: Response<ErrorResponse>, next: NextFunction) => {
+    if (err instanceof ZodError) {
+        res.status(400).json({ success: false, error: "Bad Request", details: err.errors });
+    } else {
+        next(err);
+    }
+  });
+
+  Sentry.setupExpressErrorHandler(app);
+
+  app.use((err: unknown, req: Request<{}, ErrorResponse, undefined>, res: ResponseWithSentry<ErrorResponse>, next: NextFunction) => {
+    const id = res.sentry ?? uuidv4();
+    let verbose = JSON.stringify(err);
+    if (verbose === "{}") {
+        if (err instanceof Error) {
+            verbose = JSON.stringify({
+                message: err.message,
+                name: err.name,
+                stack: err.stack,
+            });
+        }
+    }
+
+    Logger.error("Error occurred in request! (" + req.path + ") -- ID " + id  + " -- " + verbose);
+    res.status(500).json({ success: false, error: "An unexpected error occurred. Please contact hello@firecrawl.com for help. Your exception ID is " + id });
+  });
+
   Logger.info(`Worker ${process.pid} started`);
 }
+
+
 
 // const sq = getScrapeQueue();
 
@@ -189,4 +230,6 @@ if (cluster.isMaster) {
 // sq.on("paused", j => ScrapeEvents.logJobEvent(j, "paused"));
 // sq.on("resumed", j => ScrapeEvents.logJobEvent(j, "resumed"));
 // sq.on("removed", j => ScrapeEvents.logJobEvent(j, "removed"));
+
+
 

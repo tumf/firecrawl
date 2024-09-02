@@ -16,7 +16,6 @@ import {
   replacePathsWithAbsolutePaths,
 } from "./utils/replacePaths";
 import { generateCompletions } from "../../lib/LLM-extraction";
-import { getScrapeQueue } from "../../../src/services/queue-service";
 import { fetchAndProcessDocx } from "./utils/docxProcessor";
 import { getAdjustedMaxDepth, getURLDepth } from "./utils/maxDepthUtils";
 import { Logger } from "../../lib/logger";
@@ -295,28 +294,32 @@ export class WebScraperDataProvider {
       documents = await this.getSitemapData(this.urls[0], documents);
     }
 
-    documents = this.applyPathReplacements(documents);
-    // documents = await this.applyImgAltText(documents);
-    if (
-      (this.extractorOptions.mode === "llm-extraction" ||
-        this.extractorOptions.mode === "llm-extraction-from-markdown") &&
-      this.mode === "single_urls"
-    ) {
-      documents = await generateCompletions(
-        documents,
-        this.extractorOptions,
-        "markdown"
-      );
+    if (this.pageOptions.includeMarkdown) {
+      documents = this.applyPathReplacements(documents);
     }
-    if (
-      this.extractorOptions.mode === "llm-extraction-from-raw-html" &&
-      this.mode === "single_urls"
-    ) {
-      documents = await generateCompletions(
-        documents,
-        this.extractorOptions,
-        "raw-html"
-      );
+
+    if (!this.pageOptions.includeHtml) {
+      for (let document of documents) {
+        delete document.html;
+      }
+    }
+    
+    // documents = await this.applyImgAltText(documents);
+    if (this.mode === "single_urls" && this.pageOptions.includeExtract) {
+      const extractionMode = this.extractorOptions?.mode ?? "markdown";
+      const completionMode = extractionMode === "llm-extraction-from-raw-html" ? "raw-html" : "markdown";
+
+      if (
+        extractionMode === "llm-extraction" ||
+        extractionMode === "llm-extraction-from-markdown" ||
+        extractionMode === "llm-extraction-from-raw-html"
+      ) {
+        documents = await generateCompletions(
+          documents,
+          this.extractorOptions,
+          completionMode
+        );
+      }
     }
     return documents.concat(pdfDocuments).concat(docxDocuments);
   }
@@ -348,6 +351,7 @@ export class WebScraperDataProvider {
         });
         return {
           content: content,
+          markdown: content,
           metadata: { sourceURL: pdfLink, pageStatusCode, pageError },
           provider: "web-scraper",
         };
@@ -570,12 +574,21 @@ export class WebScraperDataProvider {
     this.limit = options.crawlerOptions?.limit ?? 10000;
     this.generateImgAltText =
       options.crawlerOptions?.generateImgAltText ?? false;
-    this.pageOptions = options.pageOptions ?? {
-      onlyMainContent: false,
-      includeHtml: false,
-      replaceAllPathsWithAbsolutePaths: false,
-      parsePDF: true,
-      removeTags: [],
+    this.pageOptions = {
+      onlyMainContent: options.pageOptions?.onlyMainContent ?? false,
+      includeHtml: options.pageOptions?.includeHtml ?? false,
+      replaceAllPathsWithAbsolutePaths: options.pageOptions?.replaceAllPathsWithAbsolutePaths ?? true,
+      parsePDF: options.pageOptions?.parsePDF ?? true,
+      onlyIncludeTags: options.pageOptions?.onlyIncludeTags ?? [],
+      removeTags: options.pageOptions?.removeTags ?? [],
+      includeMarkdown: options.pageOptions?.includeMarkdown ?? true,
+      includeRawHtml: options.pageOptions?.includeRawHtml ?? false,
+      includeExtract: options.pageOptions?.includeExtract ?? (options.extractorOptions?.mode && options.extractorOptions?.mode !== "markdown") ?? false, 
+      waitFor: options.pageOptions?.waitFor ?? undefined,
+      headers: options.pageOptions?.headers ?? undefined,
+      includeLinks: options.pageOptions?.includeLinks ?? true,
+      fullPageScreenshot: options.pageOptions?.fullPageScreenshot ?? false,
+      screenshot: options.pageOptions?.screenshot ?? false,
     };
     this.extractorOptions = options.extractorOptions ?? { mode: "markdown" };
     this.replaceAllPathsWithAbsolutePaths =
@@ -599,6 +612,8 @@ export class WebScraperDataProvider {
       options.crawlerOptions?.allowExternalContentLinks ?? false;
     this.priority = options.priority;
     this.teamId = options.teamId ?? null;
+
+
 
     // make sure all urls start with https://
     this.urls = this.urls.map((url) => {

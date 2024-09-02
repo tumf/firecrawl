@@ -12,7 +12,6 @@ import { Document } from "../lib/entities";
 import { supabase_service } from "../services/supabase";
 import { Logger } from "../lib/logger";
 import { ScrapeEvents } from "../lib/scrape-events";
-import { getScrapeQueue } from "../services/queue-service";
 
 export async function startWebScraperPipeline({
   job,
@@ -27,7 +26,12 @@ export async function startWebScraperPipeline({
     mode: job.data.mode,
     crawlerOptions: job.data.crawlerOptions,
     extractorOptions: job.data.extractorOptions,
-    pageOptions: job.data.pageOptions,
+    pageOptions: {
+      ...job.data.pageOptions,
+      ...(job.data.crawl_id ? ({
+        includeRawHtml: true,
+      }): {}),
+    },
     inProgress: (progress) => {
       Logger.debug(`🐂 Job in progress ${job.id}`);
       if (progress.currentDocument) {
@@ -50,6 +54,7 @@ export async function startWebScraperPipeline({
     team_id: job.data.team_id,
     bull_job_id: job.id.toString(),
     priority: job.opts.priority,
+    is_scrape: job.data.is_scrape ?? false,
   })) as { success: boolean; message: string; docs: Document[] };
 }
 export async function runWebScraper({
@@ -64,6 +69,7 @@ export async function runWebScraper({
   team_id,
   bull_job_id,
   priority,
+  is_scrape=false,
 }: RunWebScraperParams): Promise<RunWebScraperResult> {
   try {
     const provider = new WebScraperDataProvider();
@@ -110,17 +116,20 @@ export async function runWebScraper({
           }
         })
       : docs;
-    
-    const billingResult = await billTeam(team_id, filteredDocs.length);
 
-    if (!billingResult.success) {
-      // throw new Error("Failed to bill team, no subscription was found");
-      return {
-        success: false,
-        message: "Failed to bill team, no subscription was found",
-        docs: [],
-      };
+    if(is_scrape === false) {
+      const billingResult = await billTeam(team_id, filteredDocs.length);
+      if (!billingResult.success) {
+        // throw new Error("Failed to bill team, no subscription was found");
+        return {
+          success: false,
+          message: "Failed to bill team, no subscription was found",
+          docs: [],
+        };
+      }
     }
+
+    
 
     // This is where the returnvalue from the job is set
     onSuccess(filteredDocs, mode);
