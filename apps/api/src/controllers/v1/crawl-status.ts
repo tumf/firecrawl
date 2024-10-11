@@ -1,8 +1,10 @@
 import { Response } from "express";
 import { CrawlStatusParams, CrawlStatusResponse, ErrorResponse, legacyDocumentConverter, RequestWithAuth } from "./types";
-import { getCrawl, getCrawlExpiry, getCrawlJobs, getDoneJobsOrdered, getDoneJobsOrderedLength } from "../../lib/crawl-redis";
+import { getCrawl, getCrawlExpiry, getCrawlJobs, getDoneJobsOrdered, getDoneJobsOrderedLength, getThrottledJobs } from "../../lib/crawl-redis";
 import { getScrapeQueue } from "../../services/queue-service";
 import { supabaseGetJobById, supabaseGetJobsById } from "../../lib/supabase-jobs";
+import { configDotenv } from "dotenv";
+configDotenv();
 
 export async function getJob(id: string) {
   const job = await getScrapeQueue().getJob(id);
@@ -55,9 +57,15 @@ export async function crawlStatusController(req: RequestWithAuth<CrawlStatusPara
   const start = typeof req.query.skip === "string" ? parseInt(req.query.skip, 10) : 0;
   const end = typeof req.query.limit === "string" ? (start + parseInt(req.query.limit, 10) - 1) : undefined;
 
-  const jobIDs = await getCrawlJobs(req.params.jobId);
-  const jobStatuses = await Promise.all(jobIDs.map(x => getScrapeQueue().getJobState(x)));
-  const status: Exclude<CrawlStatusResponse, ErrorResponse>["status"] = sc.cancelled ? "cancelled" : jobStatuses.every(x => x === "completed") ? "completed" : jobStatuses.some(x => x === "failed") ? "failed" : "scraping";
+  let jobIDs = await getCrawlJobs(req.params.jobId);
+  let jobStatuses = await Promise.all(jobIDs.map(async x => [x, await getScrapeQueue().getJobState(x)] as const));
+  const throttledJobs = new Set(...await getThrottledJobs(req.auth.team_id));
+  jobStatuses = jobStatuses.filter(x => !throttledJobs.has(x[0])); // throttled jobs can have a failed status, but they are not actually failed
+  // filter out failed jobs
+  jobIDs = jobIDs.filter(id => !jobStatuses.some(status => status[0] === id && status[1] === "failed"));
+  // filter the job statues
+  jobStatuses = jobStatuses.filter(x => x[1] !== "failed");
+  const status: Exclude<CrawlStatusResponse, ErrorResponse>["status"] = sc.cancelled ? "cancelled" : jobStatuses.every(x => x[1] === "completed") ? "completed" : "scraping";
   const doneJobsLength = await getDoneJobsOrderedLength(req.params.jobId);
   const doneJobsOrder = await getDoneJobsOrdered(req.params.jobId, start, end ?? -1);
 
@@ -82,8 +90,8 @@ export async function crawlStatusController(req: RequestWithAuth<CrawlStatusPara
       }
     }
 
-    // if we ran over the bytes limit, remove the last document
-    if (bytes > bytesLimit) {
+    // if we ran over the bytes limit, remove the last document, except if it's the only document
+    if (bytes > bytesLimit && doneJobs.length !== 1) {
       doneJobs.splice(doneJobs.length - 1, 1);
     }
   } else {
@@ -92,7 +100,8 @@ export async function crawlStatusController(req: RequestWithAuth<CrawlStatusPara
 
   const data = doneJobs.map(x => x.returnvalue);
 
-  const nextURL = new URL(`${req.protocol}://${req.get("host")}/v1/crawl/${req.params.jobId}`);
+  const protocol = process.env.ENV === "local" ? req.protocol : "https";
+  const nextURL = new URL(`${protocol}://${req.get("host")}/v1/crawl/${req.params.jobId}`);
 
   nextURL.searchParams.set("skip", (start + data.length).toString());
 
@@ -111,6 +120,7 @@ export async function crawlStatusController(req: RequestWithAuth<CrawlStatusPara
   }
 
   res.status(200).json({
+    success: true,
     status,
     completed: doneJobsLength,
     total: jobIDs.length,

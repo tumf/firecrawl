@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { z } from "zod";
 import { isUrlBlocked } from "../../scraper/WebScraper/utils/blocklist";
-import { ExtractorOptions, PageOptions } from "../../lib/entities";
+import { Action, ExtractorOptions, PageOptions } from "../../lib/entities";
 import { protocolIncluded, checkUrl } from "../../lib/validateUrl";
 import { PlanType } from "../../types";
 
@@ -26,11 +26,18 @@ export const url = z.preprocess(
     .url()
     .regex(/^https?:\/\//, "URL uses unsupported protocol")
     .refine(
-      (x) => /\.[a-z]{2,}(\/|$)/i.test(x),
+      (x) => /\.[a-z]{2,}([\/?#]|$)/i.test(x),
       "URL must have a valid top-level domain or be a valid path"
     )
     .refine(
-      (x) => checkUrl(x as string),
+      (x) => {
+        try {
+          checkUrl(x as string)
+          return true;
+        } catch (_) {
+          return false;
+        }
+      },
       "Invalid URL"
     )
     .refine(
@@ -50,6 +57,33 @@ export const extractOptions = z.object({
 
 export type ExtractOptions = z.infer<typeof extractOptions>;
 
+export const actionsSchema = z.array(z.union([
+  z.object({
+    type: z.literal("wait"),
+    milliseconds: z.number().int().positive().finite(),
+  }),
+  z.object({
+    type: z.literal("click"),
+    selector: z.string(),
+  }),
+  z.object({
+    type: z.literal("screenshot"),
+    fullPage: z.boolean().default(false),
+  }),
+  z.object({
+    type: z.literal("write"),
+    text: z.string(),
+  }),
+  z.object({
+    type: z.literal("press"),
+    key: z.string(),
+  }),
+  z.object({
+    type: z.literal("scroll"),
+    direction: z.enum(["up", "down"]),
+  }),
+]));
+
 export const scrapeOptions = z.object({
   formats: z
     .enum([
@@ -63,7 +97,8 @@ export const scrapeOptions = z.object({
     ])
     .array()
     .optional()
-    .default(["markdown"]),
+    .default(["markdown"])
+    .refine(x => !(x.includes("screenshot") && x.includes("screenshot@fullPage")), "You may only specify either screenshot or screenshot@fullPage"),
   headers: z.record(z.string(), z.string()).optional(),
   includeTags: z.string().array().optional(),
   excludeTags: z.string().array().optional(),
@@ -72,6 +107,7 @@ export const scrapeOptions = z.object({
   waitFor: z.number().int().nonnegative().finite().safe().default(0),
   extract: extractOptions.optional(),
   parsePDF: z.boolean().default(true),
+  actions: actionsSchema.optional(),
 }).strict(strictMessage)
 
 
@@ -177,6 +213,10 @@ export type Document = {
   rawHtml?: string;
   links?: string[];
   screenshot?: string;
+  actions?: {
+    screenshots: string[];
+  };
+  warning?: string;
   metadata: {
     title?: string;
     description?: string;
@@ -225,6 +265,7 @@ export type ScrapeResponse =
       success: true;
       warning?: string;
       data: Document;
+      scrape_id?: string;
     };
 
 export interface ScrapeResponseRequestTest {
@@ -246,15 +287,28 @@ export type MapResponse =
   | {
       success: true;
       links: string[];
+      scrape_id?: string;
     };
 
 export type CrawlStatusParams = {
   jobId: string;
 };
 
+export type ConcurrencyCheckParams = {
+  teamId: string;
+};
+
+export type ConcurrencyCheckResponse =
+  | ErrorResponse
+  | {
+      success: true;
+      concurrency: number;
+    };
+
 export type CrawlStatusResponse =
   | ErrorResponse
   | {
+      success: true;
       status: "scraping" | "completed" | "failed" | "cancelled";
       completed: number;
       total: number;
@@ -273,11 +327,51 @@ type Account = {
   remainingCredits: number;
 };
 
-export interface RequestWithMaybeAuth<
+export type AuthCreditUsageChunk = {
+  api_key: string;
+  team_id: string;
+  sub_id: string | null;
+  sub_current_period_start: string | null;
+  sub_current_period_end: string | null;
+  price_id: string | null;
+  price_credits: number; // credit limit with assoicated price, or free_credits (500) if free plan
+  credits_used: number;
+  coupon_credits: number; // do not rely on this number to be up to date after calling a billTeam
+  coupons: any[];
+  adjusted_credits_used: number; // credits this period minus coupons used
+  remaining_credits: number;
+};
+
+export interface RequestWithMaybeACUC<
   ReqParams = {},
   ReqBody = undefined,
   ResBody = undefined
 > extends Request<ReqParams, ReqBody, ResBody> {
+  acuc?: AuthCreditUsageChunk,
+}
+
+export interface RequestWithACUC<
+  ReqParams = {},
+  ReqBody = undefined,
+  ResBody = undefined
+> extends Request<ReqParams, ReqBody, ResBody> {
+  acuc: AuthCreditUsageChunk,
+}
+
+export interface RequestWithAuth<
+  ReqParams = {},
+  ReqBody = undefined,
+  ResBody = undefined,
+> extends Request<ReqParams, ReqBody, ResBody> {
+  auth: AuthObject;
+  account?: Account;
+}
+
+export interface RequestWithMaybeAuth<
+  ReqParams = {},
+  ReqBody = undefined,
+  ResBody = undefined
+> extends RequestWithMaybeACUC<ReqParams, ReqBody, ResBody> {
   auth?: AuthObject;
   account?: Account;
 }
@@ -286,7 +380,7 @@ export interface RequestWithAuth<
   ReqParams = {},
   ReqBody = undefined,
   ResBody = undefined,
-> extends Request<ReqParams, ReqBody, ResBody> {
+> extends RequestWithACUC<ReqParams, ReqBody, ResBody> {
   auth: AuthObject;
   account?: Account;
 }
@@ -302,11 +396,12 @@ export function legacyCrawlerOptions(x: CrawlerOptions) {
     includes: x.includePaths,
     excludes: x.excludePaths,
     maxCrawledLinks: x.limit,
-    maxCrawledDepth: x.maxDepth,
+    maxDepth: x.maxDepth,
     limit: x.limit,
     generateImgAltText: false,
     allowBackwardCrawling: x.allowBackwardLinks,
     allowExternalContentLinks: x.allowExternalLinks,
+    ignoreSitemap: x.ignoreSitemap,
   };
 }
 
@@ -320,10 +415,12 @@ export function legacyScrapeOptions(x: ScrapeOptions): PageOptions {
     removeTags: x.excludeTags,
     onlyMainContent: x.onlyMainContent,
     waitFor: x.waitFor,
+    headers: x.headers,
     includeLinks: x.formats.includes("links"),
     screenshot: x.formats.includes("screenshot"),
     fullPageScreenshot: x.formats.includes("screenshot@fullPage"),
     parsePDF: x.parsePDF,
+    actions: x.actions as Action[], // no strict null checking grrrr - mogery
   };
 }
 
@@ -337,7 +434,7 @@ export function legacyExtractorOptions(x: ExtractOptions): ExtractorOptions {
 }
 
 export function legacyDocumentConverter(doc: any): Document {
-  if (doc === null || doc === undefined) return doc;
+  if (doc === null || doc === undefined) return null;
 
   if (doc.metadata) {
     if (doc.metadata.screenshot) {
@@ -358,12 +455,14 @@ export function legacyDocumentConverter(doc: any): Document {
     html: doc.html,
     extract: doc.llm_extraction,
     screenshot: doc.screenshot ?? doc.fullPageScreenshot,
+    actions: doc.actions ?? undefined,
+    warning: doc.warning ?? undefined,
     metadata: {
       ...doc.metadata,
       pageError: undefined,
       pageStatusCode: undefined,
-      error: doc.metadata.pageError,
-      statusCode: doc.metadata.pageStatusCode,
+      error: doc.metadata?.pageError,
+      statusCode: doc.metadata?.pageStatusCode,
     },
   };
 }

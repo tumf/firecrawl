@@ -44,6 +44,7 @@ export async function scrapeController(
       mode: "single_urls",
       crawlerOptions: {},
       team_id: req.auth.team_id,
+      plan: req.auth.plan,
       pageOptions,
       extractorOptions,
       origin: req.body.origin,
@@ -54,9 +55,11 @@ export async function scrapeController(
     jobPriority
   );
 
+  const totalWait = (req.body.waitFor ?? 0) + (req.body.actions ?? []).reduce((a,x) => (x.type === "wait" ? x.milliseconds : 0) + a, 0);
+
   let doc: any | undefined;
   try {
-    doc = (await waitForJob(job.id, timeout))[0];
+    doc = (await waitForJob(job.id, timeout + totalWait))[0];
   } catch (e) {
     Logger.error(`Error in scrapeController: ${e}`);
     if (e instanceof Error && e.message.startsWith("Job wait")) {
@@ -103,17 +106,13 @@ export async function scrapeController(
     return;
   }
   if(req.body.extract && req.body.formats.includes("extract")) {
-    creditsToBeBilled = 50;
+    creditsToBeBilled = 5;
   }
 
-  const billingResult = await billTeam(req.auth.team_id, creditsToBeBilled);
-  if (!billingResult.success) {
-    return res.status(402).json({
-      success: false,
-      error:
-        "Failed to bill team. Insufficient credits or subscription not found.",
-    });
-  }
+  billTeam(req.auth.team_id, req.acuc?.sub_id, creditsToBeBilled).catch(error => {
+    Logger.error(`Failed to bill team ${req.auth.team_id} for ${creditsToBeBilled} credits: ${error}`);
+    // Optionally, you could notify an admin or add to a retry queue here
+  });
 
   if (!pageOptions || !pageOptions.includeRawHtml) {
     if (doc && doc.rawHtml) {
@@ -147,5 +146,6 @@ export async function scrapeController(
   return res.status(200).json({
     success: true,
     data: legacyDocumentConverter(doc),
+    scrape_id: origin?.includes("website") ? jobId : undefined,
   });
 }

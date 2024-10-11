@@ -1,3 +1,4 @@
+import { AuthCreditUsageChunk } from "./controllers/v1/types";
 import { ExtractorOptions, Document, DocumentUrl } from "./lib/entities";
 
 type Mode = "crawl" | "single_urls" | "sitemap";
@@ -27,6 +28,7 @@ export interface WebScraperOptions {
   pageOptions: any;
   extractorOptions?: any;
   team_id: string;
+  plan: string;
   origin?: string;
   crawl_id?: string;
   sitemapped?: boolean;
@@ -120,6 +122,7 @@ export interface AuthResponse {
   status?: number;
   api_key?: string;
   plan?: PlanType;
+  chunk?: AuthCreditUsageChunk;
 }
   
 

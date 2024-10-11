@@ -18,6 +18,7 @@ export async function searchHelper(
   jobId: string,
   req: Request,
   team_id: string,
+  subscription_id: string,
   crawlerOptions: any,
   pageOptions: PageOptions,
   searchOptions: SearchOptions,
@@ -36,7 +37,12 @@ export async function searchHelper(
 
   const tbs = searchOptions.tbs ?? null;
   const filter = searchOptions.filter ?? null;
-  const num_results = searchOptions.limit ?? 7;
+  let num_results = Math.min(searchOptions.limit ?? 7, 10);
+
+  if (team_id === "d97c4ceb-290b-4957-8432-2b2a02727d95") {
+    num_results = 1;
+  }
+
   const num_results_buffer = Math.floor(num_results * 1.5);
 
   let res = await search({
@@ -54,18 +60,10 @@ export async function searchHelper(
   
 
   if (justSearch) {
-    const billingResult = await billTeam(
-      team_id,
-      res.length
-    );
-    if (!billingResult.success) {
-      return {
-        success: false,
-        error:
-          "Failed to bill team. Insufficient credits or subscription not found.",
-        returnCode: 402,
-      };
-    }
+    billTeam(team_id, subscription_id, res.length).catch(error => {
+      Logger.error(`Failed to bill team ${team_id} for ${res.length} credits: ${error}`);
+      // Optionally, you could notify an admin or add to a retry queue here
+    });
     return { success: true, data: res, returnCode: 200 };
   }
 
@@ -105,7 +103,7 @@ export async function searchHelper(
   if (Sentry.isInitialized()) {
     for (const job of jobDatas) {
       // add with sentry instrumentation
-      jobs.push(await addScrapeJob(job.data as any, {}, job.opts.jobId));
+      jobs.push(await addScrapeJob(job.data as any, {}, job.opts.jobId, job.opts.priority));
     }
   } else {
     jobs = await getScrapeQueue().addBulk(jobDatas);
@@ -139,7 +137,7 @@ export async function searchHelper(
 export async function searchController(req: Request, res: Response) {
   try {
     // make sure to authenticate user first, Bearer <token>
-    const { success, team_id, error, status, plan } = await authenticateUser(
+    const { success, team_id, error, status, plan, chunk } = await authenticateUser(
       req,
       res,
       RateLimiterMode.Search
@@ -163,7 +161,7 @@ export async function searchController(req: Request, res: Response) {
 
     try {
       const { success: creditsCheckSuccess, message: creditsCheckMessage } =
-        await checkTeamCredits(team_id, 1);
+        await checkTeamCredits(chunk, team_id, 1);
       if (!creditsCheckSuccess) {
         return res.status(402).json({ error: "Insufficient credits" });
       }
@@ -177,6 +175,7 @@ export async function searchController(req: Request, res: Response) {
       jobId,
       req,
       team_id,
+      chunk?.sub_id,
       crawlerOptions,
       pageOptions,
       searchOptions,
